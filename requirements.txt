@@ -1,0 +1,4 @@
+pyinstaller>=6.6
+pillow>=10.0
+mss>=9.0
+imageio-ffmpeg>=0.5
