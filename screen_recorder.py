@@ -22,7 +22,7 @@ import time
 import traceback
 from datetime import datetime
 
-from ui_kit import (AppBase, AppleButton, F, Pill, RoundedFrame, SegmentedControl,
+from ui_kit import (AppBase, AppleButton, F, Field, Pill, RoundedFrame, SegmentedControl,
                     THEME, ToggleSwitch, open_uri, px, setup_dpi)
 
 import tkinter as tk
@@ -31,7 +31,7 @@ from tkinter import filedialog, messagebox, ttk
 import win_input
 
 APP_NAME = "屏幕录制器"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 try:                       # Pillow：绘制鼠标指针 + 区域选择器预览
     from PIL import Image, ImageDraw, ImageFilter, ImageTk
@@ -610,10 +610,8 @@ class RecorderApp(AppBase):
         box2 = self._card(p, "输出")
         r = tk.Frame(box2, bg=THEME["card"])
         r.pack(fill="x", pady=(px(0), px(10)))
-        e = tk.Entry(r, textvariable=self.out_dir, font=F(10), relief="solid", bd=1,
-                     highlightthickness=1, highlightcolor=THEME["blue"],
-                     highlightbackground=THEME["border"])
-        e.pack(side="left", fill="x", expand=True, ipady=px(4))
+        e = Field(r, textvariable=self.out_dir, font=F(10))
+        e.pack(side="left", fill="x", expand=True)
         AppleButton(r, "更改…", command=self.choose_dir, style="secondary",
                     width=px(84), height=px(30), radius=px(9),
                     font=F(10)).pack(side="left", padx=px(8))
@@ -737,9 +735,8 @@ class RecorderApp(AppBase):
         r5.pack(fill="x", pady=(px(0), px(10)))
         tk.Label(r5, text="开始倒计时(秒)", bg=THEME["card"], fg=THEME["text"],
                  font=F(11)).pack(side="left")
-        tk.Spinbox(r5, from_=0, to=10, width=6, textvariable=self.countdown_var,
-                   font=F(11), relief="solid", bd=1, highlightthickness=1,
-                   highlightbackground=THEME["border"]).pack(side="left", padx=px(10))
+        Field(r5, textvariable=self.countdown_var, width_chars=6, font=F(11),
+              spin=True, from_=0, to=10).pack(side="left", padx=px(10))
         tk.Label(r5, text="给你时间切到要录的窗口", bg=THEME["card"],
                  fg=THEME["text3"], font=F(9)).pack(side="left")
 
