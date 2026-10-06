@@ -31,7 +31,7 @@ from tkinter import filedialog, messagebox, ttk
 import win_input
 
 APP_NAME = "屏幕录制器"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 try:                       # Pillow：绘制鼠标指针 + 区域选择器预览
     from PIL import Image, ImageDraw, ImageFilter, ImageTk
@@ -508,6 +508,163 @@ class RegionSelector(tk.Toplevel):
         self.destroy()
 
 
+class RegionMarker:
+    """在已选录制区域上留一个虚线标记。
+
+    两个要点：
+    · **鼠标穿透**（WS_EX_TRANSPARENT）—— 标记只是视觉提示，不能挡住用户
+      在该区域里的正常操作。
+    · **录制时自动隐藏** —— 标记是屏幕上的窗口，会被 mss 抓进画面里。
+      所以 start() 前隐藏、stop() 后恢复，否则录出来会有一圈虚线框。
+    """
+
+    def __init__(self, master):
+        self.master = master
+        self.win = None
+        self.region = None
+        self.color = "#FF3B30"
+        self.visible = False      # 当前是否应当显示（hide 后置 False，
+        # _tick 只在 visible 时重画，否则会把隐藏的又画回来）
+        self.rec_busy = False
+        self._click_through = False
+        self._alive = True
+        master.after(150, self._tick)
+
+    # -- 内部
+    def _ensure(self):
+        if self.win is not None:
+            return
+        self.win = tk.Toplevel(self.master)
+        self.win.overrideredirect(True)
+        try:
+            self.win.attributes("-topmost", True)
+            # 内部用纯色填充 + transparentcolor，让只有边线可见
+            self.win.configure(bg=self.color)
+            self.win.attributes("-transparentcolor", self.color)
+        except Exception:  # noqa: BLE001
+            pass
+        self.canvas = tk.Canvas(self.win, bg=self.color,
+                                highlightthickness=0, bd=0)
+        self.canvas.pack(fill="both", expand=True)
+        self._make_click_through()
+
+    def _make_click_through(self):
+        """WS_EX_TRANSPARENT 让鼠标事件穿透到下层窗口。
+
+        坑：Toplevel 的 winfo_id() **就是**顶层 HWND，
+        再套一层 GetParent() 会取到它的 owner（主窗口），
+        结果把扩展样式设到了主窗口上，标记窗口反而挡鼠标。
+        另需显式声明 argtypes/restype，否则 64 位下句柄被截断。
+        """
+        try:
+            hwnd = self.win.winfo_id()
+            getl = ctypes.windll.user32.GetWindowLongW
+            setl = ctypes.windll.user32.SetWindowLongW
+            getl.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
+            getl.restype = ctypes.c_long
+            setl.argtypes = [ctypes.wintypes.HWND, ctypes.c_int, ctypes.c_long]
+            setl.restype = ctypes.c_long
+            GWL_EXSTYLE = -20
+            WS_EX_TRANSPARENT = 0x20
+            WS_EX_LAYERED = 0x80000
+            WS_EX_TOOLWINDOW = 0x80
+            ex = getl(hwnd, GWL_EXSTYLE)
+            setl(hwnd, GWL_EXSTYLE,
+                 ex | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW)
+            self._click_through = True
+        except Exception:  # noqa: BLE001
+            self._click_through = False
+
+    def _draw(self):
+        if not self.region:
+            return
+        l, t, w, h = self.region
+        if w < 2 or h < 2:
+            return
+        self._ensure()
+        try:
+            #坑：hide() 用的是 withdraw()，重新显示时必须 deiconify()，
+            # 否则窗口仍是 withdrawn 状态，_draw() 画了也看不见。
+            try:
+                if self.win.state() != "normal":
+                    self.win.deiconify()
+            except tk.TclError:
+                pass
+            self.win.geometry("%dx%d+%d+%d" % (w, h, l, t))
+            self.canvas.delete("all")
+            self.canvas.create_rectangle(px(1), px(1), w - px(2), h - px(2),
+                                         outline=self.color, width=px(2),
+                                         dash=(px(6), px(4)))
+            # 四角实线标记，视觉上更明确
+            for cx, cy in ((px(1), px(1)), (w - px(2), px(1)),
+                           (px(1), h - px(2)), (w - px(2), h - px(2))):
+                self.canvas.create_line(cx, cy,
+                                        cx + (px(14) if cx < w / 2 else -px(14)),
+                                        cy, fill=self.color, width=px(3))
+                self.canvas.create_line(cx, cy,
+                                        cx, cy + (px(14) if cy < h / 2 else -px(14)),
+                                        fill=self.color, width=px(3))
+        except tk.TclError:
+            pass
+
+    # -- 对外
+    def show(self, region, color=None):
+        """显示/移动标记"""
+        if region and region[2] > 1 and region[3] > 1:
+            self.region = tuple(region)
+            if color:
+                self.color = color
+            self.visible = True
+            self._draw()
+
+    def hide(self):
+        """隐藏但保留 region（切回全屏、或录制中用）"""
+        self.visible = False
+        if self.win is not None:
+            try:
+                self.win.withdraw()
+            except tk.TclError:
+                pass
+
+    def suspend(self, on):
+        """录制期间整体收起/恢复"""
+        self.rec_busy = on
+        if on:
+            self.hide()
+        elif self.visible:
+            self._draw()
+
+    def close(self):
+        self._alive = False
+        if self.win is not None:
+            try:
+                self.win.destroy()
+            except tk.TclError:
+                pass
+            self.win = None
+
+    def _tick(self):
+        """定时重绘：跟随模式下区域会随窗口移动。
+
+        只在 visible 且非录制中才重画 —— 否则会把 hide() 掉的标记
+        立刻又画回来（全屏模式下就会冒出一圈虚线）。
+        """
+        if not self._alive:
+            return
+        try:
+            if self.visible and not self.rec_busy and self.region \
+                    and self.win is not None:
+                self._draw()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.master.after(150, self._tick)
+        except tk.TclError:
+            pass
+
+    rec_busy = False
+
+
 # ============================================================ GUI
 
 class RecorderApp(AppBase):
@@ -542,6 +699,10 @@ class RecorderApp(AppBase):
         self._audio_devices = []
         super().__init__(root, size=(960, 720), minsize=(900, 660))
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # 区域虚线标记。必须在 super().__init__ 之后建 ——
+        # AppBase 内部才把传入的 root 存成 self.root。
+        # 录制时自动隐藏，避免被录进画面。
+        self.marker = RegionMarker(self.root)
 
     @staticmethod
     def _default_dir():
@@ -724,6 +885,9 @@ class RecorderApp(AppBase):
         AppleButton(r4, "刷新设备", command=self.refresh_audio, style="secondary",
                     width=px(96), height=px(32), radius=px(9),
                     font=F(10)).pack(side="left", padx=px(8))
+        AppleButton(r4, "麦克风权限", command=self.open_mic_settings,
+                    style="secondary", width=px(110), height=px(32),
+                    radius=px(9), font=F(10)).pack(side="left")
         tk.Label(box2,
                  text="录系统声音：Windows「设置 → 隐私和安全性 → 声音 → 允许桌面应用"
                       "播放音频」后，这里会出现 虚拟音频 / 立体声混音 设备。",
@@ -819,6 +983,7 @@ class RecorderApp(AppBase):
     def _update_region_label(self):
         l, t, w, h = self.region_val
         mode = getattr(self, "region_mode", "full")
+        self._sync_marker(mode)
         if mode == "window":
             win = self._current_window()
             if win is None:
@@ -859,6 +1024,21 @@ class RecorderApp(AppBase):
         self.btn_follow.set_text("跟随移动 ●" if self.follow else "跟随移动")
         self.log("窗口跟随：%s" % ("开启（录制中窗口移动会自动调整取景）"
                                   if self.follow else "关闭"), "ok")
+
+    def _sync_marker(self, mode):
+        """区域变化时同步虚线标记。
+
+        只有「框选 / 应用窗口 / 自动识别」这三种需要画；
+        全屏模式没有明确边界，画出来反而挡视线。
+        录制中（rec_busy）不画，否则会被录进画面。
+        """
+        mk = getattr(self, "marker", None)
+        if mk is None or getattr(mk, "rec_busy", False):
+            return
+        if mode == "full" or not self.region_val[2]:
+            mk.hide()
+        else:
+            mk.show(self.region_val)
 
     def _sync_window_region(self):
         """录制中实时读取目标窗口位置，实现跟随。"""
@@ -915,8 +1095,10 @@ class RecorderApp(AppBase):
                 self.region_val = rect
                 self.region_seg.select(1)
                 self.region.set("框选区域")
+                self.region_mode = "pick"
                 self._update_region_label()
-                self.log("已选择区域：%d, %d · %d×%d" % rect, "ok")
+                self.log("已选择区域：%d, %d · %d×%d（已留下虚线标记，可拖动窗口"
+                         "看到取景范围）" % rect, "ok")
             else:
                 self.log("已取消框选。")
         RegionSelector(self.root, done)
@@ -933,8 +1115,40 @@ class RecorderApp(AppBase):
         vals = ["不录音"] + self._audio_devices
         self.audio_combo.configure(values=vals)
         self.audio_var.set("不录音")
-        self.log("检测到 %d 个录音设备。" % len(self._audio_devices),
-                 "ok" if self._audio_devices else "warn")
+        if self._audio_devices:
+            self.log("检测到 %d 个录音设备。" % len(self._audio_devices), "ok")
+        else:
+            self.log("没有检测到录音设备。若设备存在但列表为空，多半是系统"
+                     "隐私设置拦了 —— 点「麦克风权限」一键打开对应开关，"
+                     "授权后回来点「刷新设备」。", "warn")
+
+    def open_mic_settings(self):
+        """一键跳到 Windows 的麦克风/音频隐私设置页。
+
+        直接用 ms-settings URI 打开对应子页面，省得用户在设置里翻。
+        ms-settings 不可用时（老版本 Windows）退回总隐私页。
+        """
+        uris = ["ms-settings:privacy-microphone",
+                "ms-settings:privacy",
+                "control.exe /name Microsoft.Privacy"]
+        for target in uris:
+            try:
+                if os.name != "nt":
+                    break
+                os.startfile(target) if not target.startswith("control") \
+                    else subprocess.Popen(target, shell=True)
+                self.log("已打开系统设置：%s。打开「允许桌面应用访问麦克风」后，"
+                         "回来点「刷新设备」。" % target, "ok")
+                return
+            except Exception:  # noqa: BLE001
+                continue
+        messagebox.showinfo(
+            "麦克风权限",
+            "请手动打开：设置 → 隐私和安全性 → 声音 → 麦克风，\n"
+            "打开「允许桌面应用访问麦克风」。\n\n"
+            "若你要录的是系统声音（而非麦克风），还需要打开\n"
+            "「允许桌面应用播放音频」，之后点「刷新设备」即可看到"
+            "「立体声混音」等设备。")
 
     def _target_region(self):
         # 应用窗口模式：每次都取窗口的实时矩形
@@ -992,12 +1206,19 @@ class RecorderApp(AppBase):
         out = os.path.join(d, name)
         reg = self._target_region()
         audio = "" if self.audio_var.get() == "不录音" else self.audio_var.get()
+        # 先藏标记再开始录：标记是屏幕上的窗口，不藏会被一起录进画面
+        if getattr(self, "marker", None) is not None:
+            self.marker.rec_busy = True
+            self.marker.hide()
         try:
             self.rec.start(reg, int(self.fps.get()), self.crf.get(), out,
                            self.cursor_var.get(), audio)
         except Exception as e:  # noqa: BLE001
             self.log("启动失败：%s" % e, "error")
             messagebox.showerror("无法开始录制", str(e))
+            if getattr(self, "marker", None) is not None:
+                self.marker.rec_busy = False
+                self._sync_marker(getattr(self, "region_mode", "full"))
             return
         self.state_pill.set("● 录制中", THEME["red"])
         self.size_var.set("0.0 MB")
@@ -1040,6 +1261,10 @@ class RecorderApp(AppBase):
         self.btn_rec.set_text("●  开始录制")
         self.state_pill.set("● 就绪", THEME["text3"])
         self.fpsreal_var.set("0.0")
+        # 录制结束，把虚线标记放回来
+        if getattr(self, "marker", None) is not None:
+            self.marker.rec_busy = False
+            self._sync_marker(getattr(self, "region_mode", "full"))
 
     def _on_engine(self, kind, *a):
         if kind == "tick":
@@ -1076,7 +1301,10 @@ class RecorderApp(AppBase):
             self.log("请把 ffmpeg.exe 放到程序同目录，或安装 ffmpeg 并加入 PATH。", "error")
 
     def _poll_hotkey(self):
-        vk = {"F%d" % i: 0x70 + i for i in range(1, 13)}.get(self.hotkey_var.get())
+        # 坑：VK_F1 = 0x70，正确换算是 0x70 + i - 1。
+        # 之前写成 0x70 + i 整体偏移一位：设成 F9 实际监听的是 F10，按 F9 无反应。
+        vk = {"F%d" % i: 0x70 + i - 1
+              for i in range(1, 13)}.get(self.hotkey_var.get())
         try:
             if vk:
                 down = bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)
@@ -1095,6 +1323,8 @@ class RecorderApp(AppBase):
             if not messagebox.askyesno("退出", "正在录制中，退出将结束并保存当前文件，继续？"):
                 return
             self.rec.stop()
+        if getattr(self, "marker", None) is not None:
+            self.marker.close()
         self.root.destroy()
 
 
