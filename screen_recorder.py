@@ -455,13 +455,21 @@ class RegionSelector(tk.Toplevel):
         self.after(80, self._snapshot)
 
     def _snapshot(self):
-        """底图：抓一张当前屏幕铺在底下，选区看起来更直观"""
+        """底图：抓一张当前屏幕铺在底下，选区看起来更直观。
+
+        坑：这里原本加了 `GaussianBlur(2)`，在 200% 缩放下把背景文字全糊掉了 ——
+        用户要靠底图确认「要录的内容在哪」，糊了就失去意义。
+        整个 Toplevel 已有 -alpha 0.35 的半透明层做视觉压暗，
+        不需要再模糊。现在保持原图清晰，只加一层极淡的白色蒙版提亮文字。
+        """
         try:
             with _mkss() as sct:
                 shot = sct.grab({"left": self.vx, "top": self.vy,
                                  "width": self.vw, "height": self.vh})
                 img = Image.frombytes("RGB", (shot.width, shot.height), shot.rgb)
-                img = img.filter(ImageFilter.GaussianBlur(2))
+                # 不做高斯模糊；仅叠一层很淡的白纱，让文字更容易辨认
+                veil = Image.new("RGB", img.size, (255, 255, 255))
+                img = Image.blend(img, veil, 0.12)
                 self._photo = ImageTk.PhotoImage(img)
                 self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
                 self.canvas.tag_lower("all")
