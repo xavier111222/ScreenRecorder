@@ -1,5 +1,7 @@
 # 屏幕录制器（ScreenRecorder）
 
+[简体中文](README.md) | [English](README_EN.md)
+
 一个 **独立单文件** 的 Windows 录屏小工具：全屏或任意区域录制，输出标准的
 **MP4（H.264）** 文件，可直接发微信 / 上传 / 剪辑。
 
@@ -11,6 +13,17 @@
 | 录制控制 | 录制设置 |
 | --- | --- |
 | ![主界面](docs/screenshot-main.png) | ![设置](docs/screenshot-settings.png) |
+
+---
+
+## 同系列工具
+
+| 项目 | 说明 |
+| --- | --- |
+| [GPU 切换助手 GpuSwitcher](https://github.com/xavier111222/GpuSwitcher) | 独显/集显一键切换 + 逐程序指定显卡 |
+| [极速连点器 AutoClicker](https://github.com/xavier111222/AutoClicker) | 连点 + 流程宏 + 跨应用后台点击 |
+
+三个项目共用同一套高 DPI UI 骨架（`ui_kit.py`），界面风格一致。
 
 ---
 
